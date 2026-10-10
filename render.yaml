@@ -2,6 +2,7 @@ services:
   - type: web
     name: doctrail-backend
     runtime: node
+    rootDir: backend
     plan: free
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm run start
