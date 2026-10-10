@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: doctrail-backend
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install && npm run render-build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DEMO_MODE
+        value: "true"
+      - key: SIMULATION_ENABLED
+        value: "true"
+      - key: DATABASE_URL
+        value: "file:./dev.db"
+      - key: SLA_WATCHDOG_ENABLED
+        value: "true"
+      - key: SLA_WATCHDOG_INTERVAL_MS
+        value: "30000"
+      - key: PUBLIC_UPLOADS
+        value: "true"
+      - key: INTEGRATION_API_KEY
+        value: "doctrail-dev-integration-key"

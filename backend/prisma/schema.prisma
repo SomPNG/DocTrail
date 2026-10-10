@@ -1,0 +1,406 @@
+// DocTrail Prisma Schema
+// Modular Relational Schema for Government Application Workflow & SLA Engine
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// -------------------------------------------------------------
+// Users, Roles & Departments
+// -------------------------------------------------------------
+
+model Department {
+  id          String   @id @default(cuid())
+  code        String   @unique // e.g. DM_OFFICE, POLICE_DEPT, SP_OFFICE
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users          User[]
+  workflowStages WorkflowStage[]
+
+  @@map("departments")
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String
+  name         String
+  role         String      // CITIZEN, OFFICER, SUPERVISOR, ADMIN
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  badgeNumber  String?
+  phone        String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Relationships
+  citizenApplications Application[]              @relation("CitizenApplications")
+  assignedStages      ApplicationStageInstance[] @relation("AssignedOfficerStages")
+  requestedDocuments  DocumentRequest[]          @relation("RequestedByOfficer")
+  uploadedDocuments   Document[]                 @relation("UploadedByUser")
+  notifications       Notification[]             @relation("UserNotifications")
+  compensationClaims  CompensationRecord[]       @relation("CitizenCompensations")
+  recordedDecisions   ApplicationDecision[]      @relation("DecidedByUser")
+
+  @@index([role])
+  @@index([departmentId])
+  @@map("users")
+}
+
+// -------------------------------------------------------------
+// Services & Workflow Stages
+// -------------------------------------------------------------
+
+model Service {
+  id          String   @id @default(cuid())
+  key         String   @unique // e.g. "gun_license"
+  name        String   // "Gun License"
+  description String
+  configJson  String   // JSON string of configurable SLA & workflow rules
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stages       WorkflowStage[]
+  applications Application[]
+  versions     WorkflowVersion[]
+
+  @@map("services")
+}
+
+model WorkflowStage {
+  id             String      @id @default(cuid())
+  serviceId      String
+  service        Service     @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  stageKey       String      // e.g. "dm_verification", "police_verification"
+  name           String      // e.g. "DM Verification"
+  orderIndex     Int         // 1, 2, 3, 4
+  departmentId   String?
+  department     Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  departmentCode String      // DM_OFFICE, POLICE_DEPT, SP_OFFICE
+  slaDays        Float       // Configurable SLA days
+  slaHours       Float       // SLA converted to hours
+  isFinalStage   Boolean     @default(false)
+  isActive       Boolean     @default(true) // false = removed from the published workflow (kept for history)
+  checklistJson  String?     // JSON array of verification checklist items: [{ id, label, isMandatory }]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  stageInstances ApplicationStageInstance[]
+  currentForApps Application[]              @relation("CurrentStage")
+
+  @@unique([serviceId, stageKey])
+  @@index([serviceId, orderIndex])
+  @@map("workflow_stages")
+}
+
+// -------------------------------------------------------------
+// Applications & Stage Execution
+// -------------------------------------------------------------
+
+model Application {
+  id                 String         @id @default(cuid())
+  trackingNumber     String         @unique // e.g. "GL-2026-000123"
+  serviceId          String
+  service            Service        @relation(fields: [serviceId], references: [id])
+  citizenId          String
+  citizen            User           @relation("CitizenApplications", fields: [citizenId], references: [id])
+  applicantName      String
+  applicantDetails   String?        // JSON of application payload
+  currentStageId     String?
+  currentStage       WorkflowStage? @relation("CurrentStage", fields: [currentStageId], references: [id], onDelete: SetNull)
+  status             String         @default("CREATED") // CREATED, IN_PROGRESS, ON_HOLD, COMPLETED, REJECTED
+  slaStatus          String         @default("ON_TRACK") // ON_TRACK, AT_RISK, BREACHED, PAUSED, COMPLETED
+  riskScore          Float          @default(0.0) // 0 - 100
+  riskLevel          String         @default("LOW") // LOW, MEDIUM, HIGH, CRITICAL
+  compensationStatus String         @default("NONE") // NONE, ELIGIBLE_PENDING_APPROVAL, APPROVED, REJECTED, PAID
+  stuckReasonCode    String?        // latest diagnosis: WAITING_ON_CITIZEN, DEPARTMENT_BACKLOG, UNASSIGNED, ...
+  breachedStageCount Int            @default(0) // how many stages of this application have ever breached
+  isSimulated        Boolean        @default(false) // created by the simulation engine
+  lastActivityAt     DateTime?
+  qrCodeToken        String         @unique
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  completedAt        DateTime?
+
+  // Relations
+  stageInstances      ApplicationStageInstance[]
+  events              StageEvent[]
+  documentRequests    DocumentRequest[]
+  documents           Document[]
+  slaRecord           SlaRecord?
+  compensationRecords CompensationRecord[]
+  decisions           ApplicationDecision[]
+
+  @@index([citizenId])
+  @@index([status])
+  @@index([slaStatus])
+  @@index([currentStageId])
+  @@index([isSimulated])
+  @@map("applications")
+}
+
+model ApplicationStageInstance {
+  id                 String        @id @default(cuid())
+  applicationId      String
+  application        Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  stageId            String
+  stage              WorkflowStage @relation(fields: [stageId], references: [id])
+  assignedOfficerId  String?
+  assignedOfficer    User?         @relation("AssignedOfficerStages", fields: [assignedOfficerId], references: [id], onDelete: SetNull)
+  assignedAt         DateTime?
+  status             String        @default("PENDING") // PENDING, ACTIVE, COMPLETED, SKIPPED
+  startedAt          DateTime?
+  completedAt        DateTime?
+  slaDeadline        DateTime?
+  totalPausedSeconds Int           @default(0)
+  pausedAt           DateTime?
+  holdType           String?       // CITIZEN_DOCS, ADMIN_HOLD, CORRECTION, EXTERNAL (set while pausedAt is set)
+  holdReason         String?
+  atRiskAt           DateTime?     // latched the first time this stage entered AT_RISK
+  breachedAt         DateTime?     // latched the first time this stage breached its SLA
+  lastActivityAt     DateTime?
+  remarks            String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  documentRequests DocumentRequest[]
+
+  @@unique([applicationId, stageId])
+  @@index([applicationId])
+  @@index([status])
+  @@map("application_stage_instances")
+}
+
+// -------------------------------------------------------------
+// Audit Trail / Event Sourcing (Immutable, hash-chained)
+// -------------------------------------------------------------
+
+model StageEvent {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  stageId       String?
+  seq           Int         @default(0) // per-application sequence number (deterministic ordering)
+  eventType     String
+  actorId       String?
+  actorRole     String?
+  metadataJson  String      @default("{}") // Structured JSON payload (+ cryptographicSeal)
+  prevHash      String?
+  chainHash     String?
+  createdAt     DateTime    @default(now())
+
+  @@index([applicationId, seq])
+  @@index([applicationId, createdAt])
+  @@index([eventType])
+  @@map("stage_events")
+}
+
+// -------------------------------------------------------------
+// Documents & Document Requests
+// -------------------------------------------------------------
+
+model DocumentRequest {
+  id                   String                    @id @default(cuid())
+  applicationId        String
+  application          Application               @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  stageInstanceId      String?
+  stageInstance        ApplicationStageInstance? @relation(fields: [stageInstanceId], references: [id], onDelete: SetNull)
+  requestedByOfficerId String
+  requestedByOfficer   User                      @relation("RequestedByOfficer", fields: [requestedByOfficerId], references: [id])
+  documentType         String
+  title                String
+  reason               String
+  status               String                    @default("PENDING") // PENDING, SUBMITTED, APPROVED, REJECTED
+  requestedAt          DateTime                  @default(now())
+  submittedAt          DateTime?
+  resolvedAt           DateTime?
+  lastReminderAt       DateTime?
+
+  documents Document[]
+
+  @@index([applicationId])
+  @@index([status])
+  @@map("document_requests")
+}
+
+model Document {
+  id                String           @id @default(cuid())
+  applicationId     String
+  application       Application      @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  documentRequestId String?
+  documentRequest   DocumentRequest? @relation(fields: [documentRequestId], references: [id], onDelete: SetNull)
+  uploadedByUserId  String
+  uploadedByUser    User             @relation("UploadedByUser", fields: [uploadedByUserId], references: [id])
+  title             String
+  documentType      String
+  fileUrl           String
+  fileHash          String?
+  notes             String?
+  createdAt         DateTime         @default(now())
+
+  @@index([applicationId])
+  @@map("documents")
+}
+
+// -------------------------------------------------------------
+// SLA Tracking Record
+// -------------------------------------------------------------
+
+model SlaRecord {
+  id                     String      @id @default(cuid())
+  applicationId          String      @unique
+  application            Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  currentStageInstanceId String?
+  stageKey               String?
+  totalAllowedSeconds    Int         @default(0)
+  elapsedActiveSeconds   Int         @default(0)
+  pausedSeconds          Int         @default(0)
+  remainingSeconds       Int         @default(0)
+  isAtRisk               Boolean     @default(false)
+  isBreached             Boolean     @default(false)
+  isPaused               Boolean     @default(false)
+  deadline               DateTime?
+  lastCalculatedAt       DateTime    @default(now())
+
+  @@index([isBreached])
+  @@index([isAtRisk])
+  @@map("sla_records")
+}
+
+// -------------------------------------------------------------
+// Compensation Calculation & Claims
+// -------------------------------------------------------------
+
+model CompensationRecord {
+  id                         String      @id @default(cuid())
+  applicationId              String
+  application                Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  citizenId                  String
+  citizen                    User        @relation("CitizenCompensations", fields: [citizenId], references: [id])
+  breachDurationSeconds      Int
+  standardCompensationAmount Float       @default(0.0) // INR amount calculated
+  status                     String      @default("ELIGIBLE_PENDING_APPROVAL") // ELIGIBLE_PENDING_APPROVAL, APPROVED, REJECTED, PAID
+  remarks                    String?
+  reviewedByUserId           String?
+  reviewedAt                 DateTime?
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  @@index([applicationId])
+  @@index([citizenId])
+  @@index([status])
+  @@map("compensation_records")
+}
+
+// -------------------------------------------------------------
+// Notifications (in-app) + mocked outbound deliveries (SMS / WhatsApp / Email)
+// -------------------------------------------------------------
+
+model Notification {
+  id              String   @id @default(cuid())
+  recipientUserId String
+  recipient       User     @relation("UserNotifications", fields: [recipientUserId], references: [id], onDelete: Cascade)
+  applicationId   String?
+  type            String   // STAGE_TRANSITION, DOCUMENT_REQUEST, SLA_BREACH, etc.
+  templateKey     String?
+  title           String
+  message         String
+  channel         String   @default("SYSTEM") // SYSTEM, EMAIL, SMS, WHATSAPP
+  isRead          Boolean  @default(false)
+  metadataJson    String?  @default("{}")
+  createdAt       DateTime @default(now())
+
+  deliveries NotificationDelivery[]
+
+  @@index([recipientUserId, isRead])
+  @@index([applicationId])
+  @@map("notifications")
+}
+
+model NotificationDelivery {
+  id             String       @id @default(cuid())
+  notificationId String
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  channel        String       // SMS, WHATSAPP, EMAIL
+  destination    String       // masked phone / email
+  subject        String?
+  body           String
+  status         String       @default("DELIVERED_MOCK") // DELIVERED_MOCK, SKIPPED_NO_CONTACT
+  createdAt      DateTime     @default(now())
+
+  @@index([notificationId])
+  @@index([createdAt])
+  @@map("notification_deliveries")
+}
+
+// -------------------------------------------------------------
+// Workflow Versions (Immutable Published Workflow Records)
+// -------------------------------------------------------------
+
+model WorkflowVersion {
+  id                String   @id @default(cuid())
+  serviceId         String
+  service           Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  versionNumber     Int      @default(1)
+  configurationJson String   // Immutable frozen stage definitions & checklist rules
+  status            String   @default("PUBLISHED") // DRAFT, PUBLISHED, ARCHIVED
+  publishedBy       String?
+  publishedAt       DateTime @default(now())
+
+  @@unique([serviceId, versionNumber])
+  @@map("workflow_versions")
+}
+
+// -------------------------------------------------------------
+// Official Application Decisions
+// -------------------------------------------------------------
+
+model ApplicationDecision {
+  id              String      @id @default(cuid())
+  applicationId   String
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  stageInstanceId String?
+  decisionType    String      // APPROVED, REJECTED, RETURNED_FOR_CORRECTION
+  reason          String?
+  decidedByUserId String
+  decidedByUser   User        @relation("DecidedByUser", fields: [decidedByUserId], references: [id])
+  decidedAt       DateTime    @default(now())
+
+  @@index([applicationId])
+  @@index([decidedByUserId])
+  @@map("application_decisions")
+}
+
+// -------------------------------------------------------------
+// Sequences (collision-free tracking numbers)
+// -------------------------------------------------------------
+
+model Counter {
+  key   String @id // e.g. "GL-2026"
+  value Int    @default(0)
+
+  @@map("counters")
+}
+
+// -------------------------------------------------------------
+// Simulation state (virtual clock + running scenario)
+// -------------------------------------------------------------
+
+model SimulationState {
+  id            String   @id @default("singleton")
+  clockOffsetMs Float    @default(0) // virtual clock = real time + offset
+  scenarioKey   String?
+  stateJson     String   @default("{}") // engine state: profiles, rng state, planned work, story cursor
+  updatedAt     DateTime @updatedAt
+
+  @@map("simulation_state")
+}

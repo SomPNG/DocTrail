@@ -1,0 +1,19 @@
+{
+  "name": "doctrail",
+  "version": "1.0.0",
+  "description": "DocTrail - Government Application Tracking & SLA Workflow Platform",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n \"backend,frontend\" -c \"blue,green\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "test": "npm --prefix backend test",
+    "build": "npm run build:backend && npm run build:frontend && npm run sync:public",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "sync:public": "node scripts/sync-public.js"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}
