@@ -14,3 +14,7 @@
   - Reset `dev.db` database to clean slate (0 applications, 0 documents, clean uploads directory).
 - **Test Suite Status**:
   - Vitest: 59 passing tests across all 9 test suites (`npm test`).
+- **Production Deployment Readiness (Render + Vercel)**:
+  - Frontend configured with [vercel.json](file:///c:/Users/saksham%20chauhan/OneDrive/Attachments/Desktop/DocTrail/frontend/vercel.json) and dynamic `VITE_API_URL` handling.
+  - Backend prepared for Render with [render.yaml](file:///c:/Users/saksham%20chauhan/OneDrive/Attachments/Desktop/DocTrail/render.yaml), `render-build` script, and updated lockfile with production typing support.
+  - Pushed to `https://github.com/SomPNG/DocTrail.git` on `main`.
